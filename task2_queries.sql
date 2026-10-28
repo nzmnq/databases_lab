@@ -1,3 +1,5 @@
+USE smart_parking_db;
+
 SELECT 
     ps.id AS station_id,
     ps.name AS station_name,
