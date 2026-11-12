@@ -1,7 +1,11 @@
+from datetime import datetime
 import pytest
 from my_project import create_app, db
 from my_project.auth.domain.retail_chain import RetailChain
 from my_project.auth.domain.parking_station import ParkingStation
+from my_project.auth.domain.client import Client
+from my_project.auth.domain.parking_spot import ParkingSpot
+from my_project.auth.domain.parking_reservation import ParkingReservation
 
 @pytest.fixture
 def client():
@@ -52,7 +56,57 @@ def client():
             hourly_rate=30.00,
             is_24_7=True
         )
-        db.session.add_all([station1, station2])
+        station3 = ParkingStation(
+            id=3,
+            chain_id=1,
+            name="Паркінг Сільпо ТЦ Роксолана",
+            city="Львів",
+            address="пл. Соборна, 14",
+            capacity=90,
+            hourly_rate=35.00,
+            is_24_7=True
+        )
+        db.session.add_all([station1, station2, station3])
+
+        c1 = Client(id=1, client_type='INDIVIDUAL', phone='+380671112233', email='client1@example.com')
+        c2 = Client(id=2, client_type='ENTERPRISE', phone='+380674445566', email='client2@example.com')
+        spot2 = ParkingSpot(id=2, zone_id=1, spot_type_id=1, spot_number='A-02', current_status='FREE')
+        spot5 = ParkingSpot(id=5, zone_id=1, spot_type_id=1, spot_number='A-05', current_status='RESERVED')
+        spot7 = ParkingSpot(id=7, zone_id=2, spot_type_id=2, spot_number='B-01', current_status='FREE')
+        db.session.add_all([c1, c2, spot2, spot5, spot7])
+        db.session.flush()
+
+        res1 = ParkingReservation(
+            id=1,
+            client_id=1,
+            spot_id=5,
+            license_plate='BC1001AA',
+            reserved_from=datetime(2026, 9, 25, 10, 0, 0),
+            reserved_to=datetime(2026, 9, 25, 12, 0, 0),
+            booking_fee=30.00,
+            status='CONFIRMED',
+        )
+        res2 = ParkingReservation(
+            id=2,
+            client_id=1,
+            spot_id=2,
+            license_plate='BC1001AA',
+            reserved_from=datetime(2026, 9, 26, 10, 0, 0),
+            reserved_to=datetime(2026, 9, 26, 12, 0, 0),
+            booking_fee=40.00,
+            status='CONFIRMED',
+        )
+        res3 = ParkingReservation(
+            id=3,
+            client_id=2,
+            spot_id=5,
+            license_plate='BC2002BB',
+            reserved_from=datetime(2026, 9, 27, 14, 0, 0),
+            reserved_to=datetime(2026, 9, 27, 16, 0, 0),
+            booking_fee=45.00,
+            status='CONFIRMED',
+        )
+        db.session.add_all([res1, res2, res3])
         db.session.commit()
 
         yield app.test_client()
@@ -122,7 +176,7 @@ def test_delete_retail_chain(client):
 def test_get_all_parking_stations(client):
     res = client.get('/api/parking-stations')
     assert res.status_code == 200
-    assert len(res.json) == 2
+    assert len(res.json) == 3
 
 def test_get_parking_station_by_id(client):
     res = client.get('/api/parking-stations/1')
@@ -173,8 +227,10 @@ def test_get_parking_stations_of_retail_chain(client):
     res = client.get('/api/retail-chains/1/parking-stations')
     assert res.status_code == 200
     assert res.json['retail_chain_id'] == 1
-    assert res.json['total_stations'] == 1
+    assert res.json['total_stations'] == 2
+    assert len(res.json['parking_stations']) == 2
     assert res.json['parking_stations'][0]['id'] == 1
+    assert res.json['parking_stations'][1]['id'] == 3
 
 def test_get_parent_retail_chain_of_station(client):
     res = client.get('/api/parking-stations/2/retail-chain')
@@ -182,3 +238,71 @@ def test_get_parent_retail_chain_of_station(client):
     assert res.json['parking_station_id'] == 2
     assert res.json['retail_chain']['id'] == 2
     assert res.json['retail_chain']['name'] == "Victoria Gardens ТРЦ"
+
+
+def test_get_all_reservations(client):
+    res = client.get('/api/reservations')
+    assert res.status_code == 200
+    assert len(res.json) == 3
+    assert res.json[0]['client_phone'] == '+380671112233'
+    assert res.json[0]['spot_number'] == 'A-05'
+
+
+def test_get_reservations_grouped_by_clients(client):
+    res = client.get('/api/reservations/grouped-by-clients')
+    assert res.status_code == 200
+    assert len(res.json) == 2
+    assert res.json[0]['id'] == 1
+    assert len(res.json[0]['reserved_spots']) == 2
+    assert res.json[1]['id'] == 2
+    assert len(res.json[1]['reserved_spots']) == 1
+
+
+def test_get_spots_by_client_m2m(client):
+    res = client.get('/api/reservations/clients/1/spots')
+    assert res.status_code == 200
+    assert res.json['client']['id'] == 1
+    spot_ids = {s['id'] for s in res.json['reserved_spots']}
+    assert spot_ids == {2, 5}
+
+
+def test_get_clients_by_spot_m2m(client):
+    res = client.get('/api/reservations/spots/5/clients')
+    assert res.status_code == 200
+    assert res.json['parking_spot']['id'] == 5
+    client_ids = {c['id'] for c in res.json['reserving_clients']}
+    assert client_ids == {1, 2}
+
+
+def test_create_and_delete_reservation_m2m(client):
+    res = client.post('/api/reservations', json={
+        'client_id': 2,
+        'spot_id': 7,
+        'license_plate': 'BC7777KK',
+        'booking_fee': 25.00,
+    })
+    assert res.status_code == 201
+    created_id = res.json['id']
+    assert res.json['client_id'] == 2
+    assert res.json['spot_id'] == 7
+    assert res.json['spot_number'] == 'B-01'
+
+    res_del = client.delete(f'/api/reservations/{created_id}')
+    assert res_del.status_code == 200
+
+    res_get = client.get(f'/api/reservations/{created_id}')
+    assert res_get.status_code == 404
+
+
+def test_create_reservation_invalid_fk(client):
+    res = client.post('/api/reservations', json={
+        'client_id': 9999,
+        'spot_id': 5,
+    })
+    assert res.status_code == 400
+
+    res2 = client.post('/api/reservations', json={
+        'client_id': 1,
+        'spot_id': 9999,
+    })
+    assert res2.status_code == 400

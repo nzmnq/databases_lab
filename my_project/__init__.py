@@ -29,6 +29,7 @@ def create_app(test_config=None):
             'endpoints': {
                 'retail_chains': '/api/retail-chains',
                 'parking_stations': '/api/parking-stations',
+                'reservations': '/api/reservations',
                 'health': '/api/health'
             }
         }), 200
