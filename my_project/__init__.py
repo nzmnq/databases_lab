@@ -29,7 +29,20 @@ def create_app(test_config=None):
             'endpoints': {
                 'retail_chains': '/api/retail-chains',
                 'parking_stations': '/api/parking-stations',
+                'parking_zones': '/api/parking-zones',
+                'spot_types': '/api/spot-types',
+                'parking_spots': '/api/parking-spots',
+                'clients': '/api/clients',
+                'client_individuals': '/api/client-individuals',
+                'client_enterprises': '/api/client-enterprises',
+                'regular_cards': '/api/regular-cards',
+                'vehicles': '/api/vehicles',
                 'reservations': '/api/reservations',
+                'parking_sessions': '/api/parking-sessions',
+                'parking_tickets': '/api/parking-tickets',
+                'station_maintenances': '/api/station-maintenances',
+                'reservation_delete_logs': '/api/reservation-delete-logs',
+                'stored_programs': '/api/stored-programs',
                 'health': '/api/health'
             }
         }), 200

@@ -5,8 +5,6 @@ from my_project.auth.domain.i_dto import IDTO
 
 
 class ParkingReservation(db.Model, IDTO):
-    """Junction table implementing M:M between clients and parking_spots."""
-
     __tablename__ = 'parking_reservations'
 
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)

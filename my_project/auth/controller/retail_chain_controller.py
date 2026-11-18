@@ -1,6 +1,8 @@
 from typing import Tuple, Any, Dict
 from flask import jsonify
-from my_project.auth.controller.general_controller import GeneralController
+from sqlalchemy.exc import SQLAlchemyError
+from my_project import db
+from my_project.auth.controller.general_controller import GeneralController, extract_db_error_message
 from my_project.auth.service.retail_chain_service import RetailChainService
 from my_project.auth.domain.retail_chain import RetailChain
 
@@ -22,14 +24,20 @@ class RetailChainController(GeneralController):
                 'required': ['name', 'edrpou', 'support_phone']
             }), 400
 
-        # Uniqueness checks
         if self._service.get_by_name(name):
             return jsonify({'error': f"Retail chain with name '{name}' already exists"}), 409
         if self._service.get_by_edrpou(edrpou):
             return jsonify({'error': f"Retail chain with EDRPOU '{edrpou}' already exists"}), 409
 
         entity = RetailChain.create_from_dto(data)
-        created_entity = self._service.create(entity)
+        try:
+            created_entity = self._service.create(entity)
+        except SQLAlchemyError as err:
+            db.session.rollback()
+            return jsonify({
+                'error': 'Database Trigger / Integrity Error',
+                'details': extract_db_error_message(err),
+            }), 400
         return jsonify(created_entity.put_into_dto()), 201
 
     def update(self, entity_id: int, data: Dict[str, Any]) -> Tuple[Any, int]:
@@ -40,7 +48,6 @@ class RetailChainController(GeneralController):
         if not existing:
             return jsonify({'error': 'Retail chain not found', 'id': entity_id}), 404
 
-        # Validate unique conflicts if updating name or edrpou
         if 'name' in data and data['name'] != existing.name:
             if self._service.get_by_name(data['name']):
                 return jsonify({'error': f"Retail chain with name '{data['name']}' already exists"}), 409
@@ -49,13 +56,17 @@ class RetailChainController(GeneralController):
             if self._service.get_by_edrpou(data['edrpou']):
                 return jsonify({'error': f"Retail chain with EDRPOU '{data['edrpou']}' already exists"}), 409
 
-        updated = self._service.update(entity_id, data)
+        try:
+            updated = self._service.update(entity_id, data)
+        except SQLAlchemyError as err:
+            db.session.rollback()
+            return jsonify({
+                'error': 'Database Trigger / Integrity Error',
+                'details': extract_db_error_message(err),
+            }), 400
         return jsonify(updated.put_into_dto()), 200
 
     def find_parking_stations(self, chain_id: int) -> Tuple[Any, int]:
-        """
-        Returns all parking stations associated with a specific retail chain (1:M / M:1 relation).
-        """
         chain = self._service.get_by_id(chain_id)
         if not chain:
             return jsonify({'error': 'Retail chain not found', 'id': chain_id}), 404

@@ -1,7 +1,9 @@
 from datetime import datetime, timedelta
 from typing import Any, Tuple
 from flask import request
-from my_project.auth.controller.general_controller import GeneralController
+from sqlalchemy.exc import SQLAlchemyError
+from my_project import db
+from my_project.auth.controller.general_controller import GeneralController, extract_db_error_message
 from my_project.auth.domain.parking_reservation import ParkingReservation
 from my_project.auth.service.parking_reservation_service import ParkingReservationService
 
@@ -39,7 +41,14 @@ class ParkingReservationController(GeneralController):
         except ValueError as err:
             return {'error': f'Invalid datetime format: {err}'}, 400
 
-        created = self._service.create(reservation)
+        try:
+            created = self._service.create(reservation)
+        except SQLAlchemyError as err:
+            db.session.rollback()
+            return {
+                'error': 'Database Trigger / Integrity Error',
+                'details': extract_db_error_message(err),
+            }, 400
         return created.put_into_dto(), 201
 
     def find_spots_by_client(self, client_id: int) -> Tuple[Any, int]:

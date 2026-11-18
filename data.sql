@@ -1,9 +1,13 @@
+SET GLOBAL log_bin_trust_function_creators = 1;
+
 CREATE DATABASE IF NOT EXISTS smart_parking_db
     CHARACTER SET utf8mb4
     COLLATE utf8mb4_unicode_ci;
 
 USE smart_parking_db;
 
+DROP TABLE IF EXISTS reservation_delete_logs;
+DROP TABLE IF EXISTS station_maintenances;
 DROP TABLE IF EXISTS parking_tickets;
 DROP TABLE IF EXISTS parking_sessions;
 DROP TABLE IF EXISTS parking_reservations;
@@ -145,6 +149,25 @@ CREATE TABLE parking_tickets (
     paid_time DATETIME NULL,
     paid_amount DECIMAL(10, 2) DEFAULT 0.00,
     payment_method ENUM('CASH', 'CARD', 'MOBILE_APP', 'SUBSCRIPTION') NULL
+) ENGINE = InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE station_maintenances (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    station_id INT NOT NULL,
+    inspector_code VARCHAR(15) NOT NULL,
+    description VARCHAR(255) NOT NULL,
+    maintenance_cost DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+    performed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE = InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE reservation_delete_logs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    reservation_id INT NOT NULL,
+    client_id INT NOT NULL,
+    spot_id INT NOT NULL,
+    license_plate VARCHAR(16) NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    deleted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE = InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 ALTER TABLE parking_stations
@@ -409,3 +432,333 @@ INSERT INTO parking_tickets (id, session_id, ticket_number, issue_time, payment_
 (10, 10, 'TCK-20260919-0010', '2026-09-19 13:00:00', 'EXEMPT', '2026-09-19 15:00:00', 0.00, 'SUBSCRIPTION'),
 (11, 11, 'TCK-20260922-0011', '2026-09-22 08:30:00', 'PAID', '2026-09-22 10:25:00', 60.00, 'CARD'),
 (12, 12, 'TCK-20260922-0012', '2026-09-22 07:00:00', 'PAID', '2026-09-22 10:50:00', 144.00, 'SUBSCRIPTION');
+
+INSERT INTO station_maintenances (id, station_id, inspector_code, description, maintenance_cost, performed_at) VALUES
+(1, 1, 'AB-101-12', 'Планова перевірка вентиляції підземного паркінгу', 4500.00, '2026-09-10 09:00:00'),
+(2, 1, 'CD-204-35', 'Калібрування камер розпізнавання номерів на в’їзді', 2200.00, '2026-09-15 14:30:00'),
+(3, 2, 'EF-309-44', 'Заміна світлодіодних табло вільних місць', 3800.00, '2026-09-18 11:15:00'),
+(4, 6, 'GH-412-88', 'Технічне обслуговування шлагбаумів та терміналів оплати', 5100.00, '2026-09-20 16:00:00');
+
+DELIMITER //
+
+DROP TRIGGER IF EXISTS trg_station_maintenances_before_insert //
+CREATE TRIGGER trg_station_maintenances_before_insert
+BEFORE INSERT ON station_maintenances
+FOR EACH ROW
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM parking_stations WHERE id = NEW.station_id) THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'FK Trigger Error: Parking station with given station_id does not exist';
+    END IF;
+
+    IF NEW.inspector_code NOT REGEXP '^[A-LN-QS-Z]{2}-[0-9]{3}-[0-9]{2}$' THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Format Trigger Error: inspector_code must match XX-000-00 (letters except M and R)';
+    END IF;
+END //
+
+DROP TRIGGER IF EXISTS trg_station_maintenances_before_update //
+CREATE TRIGGER trg_station_maintenances_before_update
+BEFORE UPDATE ON station_maintenances
+FOR EACH ROW
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM parking_stations WHERE id = NEW.station_id) THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'FK Trigger Error: Parking station with given station_id does not exist';
+    END IF;
+
+    IF NEW.inspector_code NOT REGEXP '^[A-LN-QS-Z]{2}-[0-9]{3}-[0-9]{2}$' THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Format Trigger Error: inspector_code must match XX-000-00 (letters except M and R)';
+    END IF;
+END //
+
+DROP TRIGGER IF EXISTS trg_parking_stations_before_delete_maint //
+CREATE TRIGGER trg_parking_stations_before_delete_maint
+BEFORE DELETE ON parking_stations
+FOR EACH ROW
+BEGIN
+    IF EXISTS (SELECT 1 FROM station_maintenances WHERE station_id = OLD.id) THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'FK Trigger Error: Cannot delete parking_station because related station_maintenances records exist';
+    END IF;
+END //
+
+DROP TRIGGER IF EXISTS trg_parking_stations_before_update_id //
+CREATE TRIGGER trg_parking_stations_before_update_id
+BEFORE UPDATE ON parking_stations
+FOR EACH ROW
+BEGIN
+    IF NEW.id <> OLD.id AND EXISTS (SELECT 1 FROM station_maintenances WHERE station_id = OLD.id) THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'FK Trigger Error: Cannot update parking_station id because related station_maintenances records exist';
+    END IF;
+END //
+
+DROP TRIGGER IF EXISTS trg_retail_chains_edrpou_no_00_insert //
+CREATE TRIGGER trg_retail_chains_edrpou_no_00_insert
+BEFORE INSERT ON retail_chains
+FOR EACH ROW
+BEGIN
+    IF NEW.edrpou LIKE '%00' THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Trigger Error: edrpou cannot end with two zeros (00)';
+    END IF;
+END //
+
+DROP TRIGGER IF EXISTS trg_retail_chains_edrpou_no_00_update //
+CREATE TRIGGER trg_retail_chains_edrpou_no_00_update
+BEFORE UPDATE ON retail_chains
+FOR EACH ROW
+BEGIN
+    IF NEW.edrpou LIKE '%00' THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Trigger Error: edrpou cannot end with two zeros (00)';
+    END IF;
+END //
+
+DROP TRIGGER IF EXISTS trg_retail_chains_min_cardinality //
+CREATE TRIGGER trg_retail_chains_min_cardinality
+BEFORE DELETE ON retail_chains
+FOR EACH ROW
+BEGIN
+    DECLARE v_count INT;
+    SELECT COUNT(*) INTO v_count FROM retail_chains;
+    IF v_count <= 6 THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Trigger Error: Minimum cardinality of 6 rows required for retail_chains';
+    END IF;
+END //
+
+DROP TRIGGER IF EXISTS trg_parking_reservations_after_delete //
+CREATE TRIGGER trg_parking_reservations_after_delete
+AFTER DELETE ON parking_reservations
+FOR EACH ROW
+BEGIN
+    INSERT INTO reservation_delete_logs (reservation_id, client_id, spot_id, license_plate, status, deleted_at)
+    VALUES (OLD.id, OLD.client_id, OLD.spot_id, OLD.license_plate, OLD.status, NOW());
+END //
+
+DROP PROCEDURE IF EXISTS sp_insert_station_maintenance //
+CREATE PROCEDURE sp_insert_station_maintenance(
+    IN p_station_id INT,
+    IN p_inspector_code VARCHAR(15),
+    IN p_description VARCHAR(255),
+    IN p_maintenance_cost DECIMAL(10, 2)
+)
+BEGIN
+    INSERT INTO station_maintenances (station_id, inspector_code, description, maintenance_cost, performed_at)
+    VALUES (p_station_id, p_inspector_code, p_description, p_maintenance_cost, NOW());
+
+    SELECT id, station_id, inspector_code, description, maintenance_cost, performed_at
+    FROM station_maintenances
+    WHERE id = LAST_INSERT_ID();
+END //
+
+DROP PROCEDURE IF EXISTS sp_create_reservation_by_values //
+CREATE PROCEDURE sp_create_reservation_by_values(
+    IN p_client_email VARCHAR(100),
+    IN p_spot_number VARCHAR(20),
+    IN p_license_plate VARCHAR(16),
+    IN p_reserved_from DATETIME,
+    IN p_reserved_to DATETIME,
+    IN p_booking_fee DECIMAL(8, 2)
+)
+BEGIN
+    DECLARE v_client_id INT DEFAULT NULL;
+    DECLARE v_spot_id INT DEFAULT NULL;
+
+    SELECT id INTO v_client_id
+    FROM clients
+    WHERE email = p_client_email
+    LIMIT 1;
+
+    IF v_client_id IS NULL THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'M:M Procedure Error: Client with specified email does not exist';
+    END IF;
+
+    SELECT id INTO v_spot_id
+    FROM parking_spots
+    WHERE spot_number = p_spot_number
+    LIMIT 1;
+
+    IF v_spot_id IS NULL THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'M:M Procedure Error: Parking spot with specified spot_number does not exist';
+    END IF;
+
+    INSERT INTO parking_reservations (spot_id, client_id, license_plate, reserved_from, reserved_to, booking_fee, status, created_at)
+    VALUES (v_spot_id, v_client_id, p_license_plate, p_reserved_from, p_reserved_to, p_booking_fee, 'CONFIRMED', NOW());
+
+    SELECT r.id, r.client_id, c.email AS client_email, c.phone AS client_phone,
+           r.spot_id, s.spot_number, r.license_plate, r.reserved_from, r.reserved_to,
+           r.booking_fee, r.status
+    FROM parking_reservations r
+    JOIN clients c ON c.id = r.client_id
+    JOIN parking_spots s ON s.id = r.spot_id
+    WHERE r.id = LAST_INSERT_ID();
+END //
+
+DROP PROCEDURE IF EXISTS sp_insert_noname_spot_types //
+CREATE PROCEDURE sp_insert_noname_spot_types(
+    IN p_start_num INT
+)
+BEGIN
+    DECLARE v_i INT DEFAULT 0;
+    DECLARE v_current_num INT;
+    DECLARE v_candidate_name VARCHAR(50);
+
+    IF p_start_num IS NULL OR p_start_num <= 0 THEN
+        SELECT COALESCE(MAX(CAST(SUBSTRING(type_name, 7) AS UNSIGNED)), 0) + 1
+        INTO v_current_num
+        FROM spot_types
+        WHERE type_name REGEXP '^Noname[0-9]+$';
+    ELSE
+        SET v_current_num = p_start_num;
+    END IF;
+
+    WHILE v_i < 10 DO
+        SET v_candidate_name = CONCAT('Noname', v_current_num);
+        WHILE EXISTS (SELECT 1 FROM spot_types WHERE type_name = v_candidate_name) DO
+            SET v_current_num = v_current_num + 1;
+            SET v_candidate_name = CONCAT('Noname', v_current_num);
+        END WHILE;
+
+        INSERT INTO spot_types (type_name, description, tariff_multiplier)
+        VALUES (v_candidate_name, CONCAT('Автоматично згенерований тип #', v_current_num), 1.00);
+
+        SET v_i = v_i + 1;
+        SET v_current_num = v_current_num + 1;
+    END WHILE;
+
+    SELECT id, type_name, description, tariff_multiplier
+    FROM spot_types
+    WHERE type_name REGEXP '^Noname[0-9]+$'
+    ORDER BY id DESC
+    LIMIT 10;
+END //
+
+DROP FUNCTION IF EXISTS fn_parking_station_rate_stat //
+CREATE FUNCTION fn_parking_station_rate_stat(p_stat_type VARCHAR(10))
+RETURNS DECIMAL(10, 2)
+READS SQL DATA
+DETERMINISTIC
+BEGIN
+    DECLARE v_result DECIMAL(10, 2);
+    CASE UPPER(p_stat_type)
+        WHEN 'MIN' THEN
+            SELECT MIN(hourly_rate) INTO v_result FROM parking_stations;
+        WHEN 'MAX' THEN
+            SELECT MAX(hourly_rate) INTO v_result FROM parking_stations;
+        WHEN 'SUM' THEN
+            SELECT SUM(hourly_rate) INTO v_result FROM parking_stations;
+        WHEN 'AVG' THEN
+            SELECT AVG(hourly_rate) INTO v_result FROM parking_stations;
+        ELSE
+            SET v_result = NULL;
+    END CASE;
+    RETURN COALESCE(v_result, 0.00);
+END //
+
+DROP PROCEDURE IF EXISTS sp_get_parking_station_rate_stats //
+CREATE PROCEDURE sp_get_parking_station_rate_stats(
+    IN p_stat_type VARCHAR(10)
+)
+BEGIN
+    IF p_stat_type IS NOT NULL AND TRIM(p_stat_type) <> '' AND UPPER(p_stat_type) <> 'ALL' THEN
+        SELECT
+            UPPER(p_stat_type) AS operation,
+            fn_parking_station_rate_stat(p_stat_type) AS value,
+            fn_parking_station_rate_stat('MIN') AS min_hourly_rate,
+            fn_parking_station_rate_stat('MAX') AS max_hourly_rate,
+            fn_parking_station_rate_stat('AVG') AS avg_hourly_rate,
+            fn_parking_station_rate_stat('SUM') AS sum_hourly_rate;
+    ELSE
+        SELECT
+            'ALL' AS operation,
+            fn_parking_station_rate_stat('AVG') AS value,
+            fn_parking_station_rate_stat('MIN') AS min_hourly_rate,
+            fn_parking_station_rate_stat('MAX') AS max_hourly_rate,
+            fn_parking_station_rate_stat('AVG') AS avg_hourly_rate,
+            fn_parking_station_rate_stat('SUM') AS sum_hourly_rate;
+    END IF;
+END //
+
+DROP PROCEDURE IF EXISTS sp_split_clients_cursor //
+CREATE PROCEDURE sp_split_clients_cursor()
+BEGIN
+    DECLARE done INT DEFAULT FALSE;
+    DECLARE v_id INT;
+    DECLARE v_client_type VARCHAR(20);
+    DECLARE v_phone VARCHAR(20);
+    DECLARE v_email VARCHAR(100);
+    DECLARE v_reg_date DATETIME;
+
+    DECLARE v_ts VARCHAR(32);
+    DECLARE v_table1 VARCHAR(64);
+    DECLARE v_table2 VARCHAR(64);
+    DECLARE v_count1 INT DEFAULT 0;
+    DECLARE v_count2 INT DEFAULT 0;
+
+    DECLARE cur_clients CURSOR FOR
+        SELECT id, client_type, phone, email, registration_date FROM clients;
+    DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = TRUE;
+
+    SET v_ts = DATE_FORMAT(NOW(6), '%Y%m%d_%H%i%s_%f');
+    SET v_table1 = CONCAT('clients_copy1_', v_ts);
+    SET v_table2 = CONCAT('clients_copy2_', v_ts);
+
+    SET @sql_create1 = CONCAT('CREATE TABLE ', v_table1, ' LIKE clients');
+    PREPARE stmt_create1 FROM @sql_create1;
+    EXECUTE stmt_create1;
+    DEALLOCATE PREPARE stmt_create1;
+
+    SET @sql_create2 = CONCAT('CREATE TABLE ', v_table2, ' LIKE clients');
+    PREPARE stmt_create2 FROM @sql_create2;
+    EXECUTE stmt_create2;
+    DEALLOCATE PREPARE stmt_create2;
+
+    SET @sql_ins1 = CONCAT('INSERT INTO ', v_table1, ' (id, client_type, phone, email, registration_date) VALUES (?, ?, ?, ?, ?)');
+    PREPARE stmt_ins1 FROM @sql_ins1;
+
+    SET @sql_ins2 = CONCAT('INSERT INTO ', v_table2, ' (id, client_type, phone, email, registration_date) VALUES (?, ?, ?, ?, ?)');
+    PREPARE stmt_ins2 FROM @sql_ins2;
+
+    OPEN cur_clients;
+
+    read_loop: LOOP
+        FETCH cur_clients INTO v_id, v_client_type, v_phone, v_email, v_reg_date;
+        IF done THEN
+            LEAVE read_loop;
+        END IF;
+
+        SET @p_id = v_id;
+        SET @p_type = v_client_type;
+        SET @p_phone = v_phone;
+        SET @p_email = v_email;
+        SET @p_reg = v_reg_date;
+
+        IF RAND() < 0.5 THEN
+            EXECUTE stmt_ins1 USING @p_id, @p_type, @p_phone, @p_email, @p_reg;
+            SET v_count1 = v_count1 + 1;
+        ELSE
+            EXECUTE stmt_ins2 USING @p_id, @p_type, @p_phone, @p_email, @p_reg;
+            SET v_count2 = v_count2 + 1;
+        END IF;
+    END LOOP;
+
+    CLOSE cur_clients;
+
+    DEALLOCATE PREPARE stmt_ins1;
+    DEALLOCATE PREPARE stmt_ins2;
+
+    SELECT
+        v_table1 AS table_1_name,
+        v_count1 AS table_1_rows,
+        v_table2 AS table_2_name,
+        v_count2 AS table_2_rows,
+        (v_count1 + v_count2) AS total_rows_copied;
+END //
+
+DELIMITER ;

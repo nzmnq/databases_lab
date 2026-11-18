@@ -1,6 +1,8 @@
 from typing import Tuple, Any, Dict
 from flask import jsonify
-from my_project.auth.controller.general_controller import GeneralController
+from sqlalchemy.exc import SQLAlchemyError
+from my_project import db
+from my_project.auth.controller.general_controller import GeneralController, extract_db_error_message
 from my_project.auth.service.parking_station_service import ParkingStationService
 from my_project.auth.service.retail_chain_service import RetailChainService
 from my_project.auth.domain.parking_station import ParkingStation
@@ -25,13 +27,19 @@ class ParkingStationController(GeneralController):
                 'required': ['chain_id', 'name', 'city', 'address']
             }), 400
 
-        # Foreign key validation
         parent_chain = self._chain_service.get_by_id(chain_id)
         if not parent_chain:
             return jsonify({'error': f"Parent retail chain with id {chain_id} does not exist"}), 400
 
         entity = ParkingStation.create_from_dto(data)
-        created_entity = self._service.create(entity)
+        try:
+            created_entity = self._service.create(entity)
+        except SQLAlchemyError as err:
+            db.session.rollback()
+            return jsonify({
+                'error': 'Database Trigger / Integrity Error',
+                'details': extract_db_error_message(err),
+            }), 400
         return jsonify(created_entity.put_into_dto()), 201
 
     def update(self, entity_id: int, data: Dict[str, Any]) -> Tuple[Any, int]:
@@ -47,13 +55,17 @@ class ParkingStationController(GeneralController):
             if not parent_chain:
                 return jsonify({'error': f"Parent retail chain with id {data['chain_id']} does not exist"}), 400
 
-        updated = self._service.update(entity_id, data)
+        try:
+            updated = self._service.update(entity_id, data)
+        except SQLAlchemyError as err:
+            db.session.rollback()
+            return jsonify({
+                'error': 'Database Trigger / Integrity Error',
+                'details': extract_db_error_message(err),
+            }), 400
         return jsonify(updated.put_into_dto()), 200
 
     def find_parent_chain(self, station_id: int) -> Tuple[Any, int]:
-        """
-        Returns parent retail chain for given parking station (M:1 relationship).
-        """
         station = self._service.get_by_id(station_id)
         if not station:
             return jsonify({'error': 'Parking station not found', 'id': station_id}), 404
